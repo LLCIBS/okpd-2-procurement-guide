@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import { GoogleGenAI, Type } from "@google/genai";
 import type { Tender } from "../types";
+import { withGemini429Retry } from "../lib/geminiRetry";
 import { alignTenderLinksWithGrounding } from "./tenderLinkAlign";
 import { maskProxyForLog, withGeminiProxy } from "./geminiProxy";
 
@@ -73,31 +74,38 @@ export async function runTenderSearch(
     const t0 = Date.now();
     log("вызов ai.models.generateContent (инструмент googleSearch может занимать 30–120 с)");
 
-    const response = await ai.models.generateContent({
-      model: MODEL,
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: {
-        tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              id: { type: Type.STRING },
-              title: { type: Type.STRING },
-              price: { type: Type.STRING },
-              restrictions: { type: Type.STRING },
-              link: { type: Type.STRING },
-              platform: { type: Type.STRING },
-              date: { type: Type.STRING },
-              okpd2: { type: Type.STRING },
+    const response = await withGemini429Retry(
+      () =>
+        ai.models.generateContent({
+          model: MODEL,
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          config: {
+            tools: [{ googleSearch: {} }],
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  price: { type: Type.STRING },
+                  restrictions: { type: Type.STRING },
+                  link: { type: Type.STRING },
+                  platform: { type: Type.STRING },
+                  date: { type: Type.STRING },
+                  okpd2: { type: Type.STRING },
+                },
+                required: ["id", "title", "price", "restrictions", "link", "platform"],
+              },
             },
-            required: ["id", "title", "price", "restrictions", "link", "platform"],
           },
-        },
-      },
-    });
+        }),
+      {
+        onRetry: ({ retryNumber, waitMs }) =>
+          log("429 от Gemini, повтор", { retryNumber, waitMs }),
+      }
+    );
 
     const ms = Date.now() - t0;
     const raw = response.text ?? "";

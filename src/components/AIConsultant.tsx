@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { GoogleGenAI } from "@google/genai";
+import { withGemini429Retry } from "../lib/geminiRetry";
 import { Send, Bot, User, Loader2, Sparkles } from "lucide-react";
 import { cn } from "../lib/utils";
 import { OKPDCode, ChatMessage } from "../types";
@@ -55,16 +56,18 @@ export function AIConsultant({ selectedCode }: AIConsultantProps) {
       
       Отвечайте четко, ссылаясь на нормативные акты. Если пользователь спрашивает про шаблоны на конкретной площадке, объясните, что основные шаблоны (типовые условия) едины для всех и берутся из ЕИС, но у площадок могут быть свои дополнительные формы в разделе "База знаний".`;
 
-      const response = await ai.models.generateContent({
-        model,
-        contents: [
-          { role: 'user', parts: [{ text: userMessage }] }
-        ],
-        config: {
-          systemInstruction,
-          temperature: 0.7,
-        }
-      });
+      const response = await withGemini429Retry(() =>
+        ai.models.generateContent({
+          model,
+          contents: [
+            { role: 'user', parts: [{ text: userMessage }] }
+          ],
+          config: {
+            systemInstruction,
+            temperature: 0.7,
+          }
+        })
+      );
 
       const aiResponse = response.text || "Извините, я не смог обработать ваш запрос.";
       setMessages(prev => [...prev, { role: 'assistant', content: aiResponse }]);
