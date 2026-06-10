@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { ExternalLink, Loader2, Search as SearchIcon, TrendingUp, AlertCircle, DollarSign, ShieldAlert, Hash } from "lucide-react";
-import { Tender } from "../types";
+import { Tender, TenderLawFilter } from "../types";
 import { motion, AnimatePresence } from "motion/react";
 
 /** Пауза после последнего символа — один запрос к API, не на каждую букву. */
@@ -10,9 +10,11 @@ interface TenderSearchProps {
   query: string;
   /** Увеличивается при Enter в поле поиска — мгновенный запрос без ожидания debounce. */
   searchKick?: number;
+  lawFilter: TenderLawFilter;
+  onLawFilterChange: React.Dispatch<React.SetStateAction<TenderLawFilter>>;
 }
 
-export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
+export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChange }: TenderSearchProps) {
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,9 +22,17 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const lastKickHandledRef = useRef(searchKick);
 
-  const fetchTenders = useCallback(async (q: string) => {
+  const fetchTenders = useCallback(async (q: string, filter: TenderLawFilter) => {
     const trimmed = q.trim();
     if (!trimmed) return;
+
+    if (!filter.law44 && !filter.law223) {
+      setIsLoading(false);
+      setTenders([]);
+      setError("Выберите хотя бы один закон: 44-ФЗ и/или 223-ФЗ.");
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
 
@@ -30,7 +40,7 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
       const res = await fetch("/api/tender-search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: trimmed }),
+        body: JSON.stringify({ query: trimmed, lawFilter: filter }),
       });
       const payload = (await res.json()) as { tenders?: Tender[]; error?: string };
 
@@ -66,16 +76,23 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
       return;
     }
 
+    if (!lawFilter.law44 && !lawFilter.law223) {
+      setAwaitingPause(false);
+      setTenders([]);
+      setError("Выберите хотя бы один закон: 44-ФЗ и/или 223-ФЗ.");
+      return;
+    }
+
     setAwaitingPause(true);
     debounceTimerRef.current = setTimeout(() => {
       setAwaitingPause(false);
-      void fetchTenders(query);
+      void fetchTenders(query, lawFilter);
     }, DEBOUNCE_MS);
 
     return () => {
       clearTimeout(debounceTimerRef.current);
     };
-  }, [query, fetchTenders]);
+  }, [query, lawFilter, fetchTenders]);
 
   useEffect(() => {
     if (searchKick === lastKickHandledRef.current) return;
@@ -83,26 +100,48 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
     clearTimeout(debounceTimerRef.current);
     setAwaitingPause(false);
     const trimmed = query.trim();
-    if (trimmed.length >= 3) {
-      void fetchTenders(trimmed);
+    if (trimmed.length >= 3 && (lawFilter.law44 || lawFilter.law223)) {
+      void fetchTenders(trimmed, lawFilter);
     }
-  }, [searchKick, query, fetchTenders]);
+  }, [searchKick, query, lawFilter, fetchTenders]);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <TrendingUp className="h-5 w-5 text-blue-600" />
           <h3 className="text-lg font-bold text-slate-900">Актуальные закупки в ЕИС</h3>
         </div>
-        <button 
-          onClick={() => void fetchTenders(query)}
-          disabled={isLoading || query.trim().length < 3}
+        <button
+          onClick={() => void fetchTenders(query, lawFilter)}
+          disabled={isLoading || query.trim().length < 3 || (!lawFilter.law44 && !lawFilter.law223)}
           className="text-xs font-bold text-blue-600 hover:text-blue-700 uppercase tracking-wider flex items-center gap-1 disabled:opacity-50"
         >
           {isLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <SearchIcon className="h-3 w-3" />}
           Обновить
         </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+        <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Искать по:</span>
+        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={lawFilter.law44}
+            onChange={(event) => onLawFilterChange((prev) => ({ ...prev, law44: event.target.checked }))}
+            className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+          />
+          44-ФЗ
+        </label>
+        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={lawFilter.law223}
+            onChange={(event) => onLawFilterChange((prev) => ({ ...prev, law223: event.target.checked }))}
+            className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+          />
+          223-ФЗ
+        </label>
       </div>
 
       {awaitingPause && !isLoading && query.trim().length >= 3 && (
@@ -113,7 +152,7 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
 
       <AnimatePresence mode="wait">
         {isLoading ? (
-          <motion.div 
+          <motion.div
             key="loading"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -126,7 +165,7 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
             </p>
           </motion.div>
         ) : error ? (
-          <motion.div 
+          <motion.div
             key="error"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -136,7 +175,7 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
             <p className="text-sm font-medium">{error}</p>
           </motion.div>
         ) : tenders.length === 0 ? (
-          <motion.div 
+          <motion.div
             key="empty"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -146,15 +185,15 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
             <p className="text-slate-500 font-medium">Закупки по данному запросу не найдены</p>
           </motion.div>
         ) : (
-          <motion.div 
+          <motion.div
             key="list"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className="grid grid-cols-1 gap-4"
           >
             {tenders.map((tender) => (
-              <div 
-                key={tender.id} 
+              <div
+                key={tender.id}
                 className="bg-white rounded-2xl border border-slate-100 p-5 hover:shadow-md transition-all group"
               >
                 <div className="flex items-start justify-between gap-4 mb-3">
@@ -166,9 +205,9 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
                       {tender.title}
                     </h4>
                   </div>
-                  <a 
-                    href={tender.link} 
-                    target="_blank" 
+                  <a
+                    href={tender.link}
+                    target="_blank"
                     rel="noopener noreferrer"
                     className="shrink-0 p-2 bg-slate-50 rounded-lg text-blue-600 hover:bg-blue-600 hover:text-white transition-all"
                   >

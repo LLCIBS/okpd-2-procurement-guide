@@ -1,4 +1,4 @@
-import type { Tender } from "../types";
+import type { Tender, TenderLawFilter } from "../types";
 
 const EIS_SEARCH_URL = "https://zakupki.gov.ru/epz/order/extendedsearch/results.html";
 const REQUEST_TIMEOUT_MS = 25_000;
@@ -15,6 +15,22 @@ const QUERY_SYNONYMS: Record<string, string[]> = {
 };
 
 const cache = new Map<string, { expiresAt: number; tenders: Tender[] }>();
+
+function lawFilterKey(lawFilter: TenderLawFilter): string {
+  return `${lawFilter.law44 ? "44" : ""}${lawFilter.law223 ? "223" : ""}` || "none";
+}
+
+function tenderMatchesLawFilter(tender: Tender, lawFilter: TenderLawFilter): boolean {
+  if (tender.platform.includes("44-ФЗ")) return lawFilter.law44;
+  if (tender.platform.includes("223-ФЗ")) return lawFilter.law223;
+  return lawFilter.law44 || lawFilter.law223;
+}
+
+function filterTendersByLaw(tenders: Tender[], lawFilter: TenderLawFilter): Tender[] {
+  if (lawFilter.law44 && lawFilter.law223) return tenders;
+  if (!lawFilter.law44 && !lawFilter.law223) return [];
+  return tenders.filter((tender) => tenderMatchesLawFilter(tender, lawFilter));
+}
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -328,45 +344,47 @@ function rankAndFilterTenders(tenders: Tender[], query: string, maxResults: numb
     .slice(0, maxResults);
 }
 
-function remember(query: string, tenders: Tender[]): void {
+function remember(cacheKey: string, tenders: Tender[]): void {
   if (cache.size >= CACHE_MAX_ENTRIES) {
     const oldestKey = cache.keys().next().value;
     if (oldestKey) cache.delete(oldestKey);
   }
 
-  cache.set(query, {
+  cache.set(cacheKey, {
     expiresAt: Date.now() + CACHE_TTL_MS,
     tenders,
   });
 }
 
-function fromCache(query: string): Tender[] | null {
-  const hit = cache.get(query);
+function fromCache(cacheKey: string): Tender[] | null {
+  const hit = cache.get(cacheKey);
   if (!hit) return null;
   if (hit.expiresAt < Date.now()) {
-    cache.delete(query);
+    cache.delete(cacheKey);
     return null;
   }
   return hit.tenders.map((tender) => ({ ...tender }));
 }
 
-export async function searchEisTenders(query: string, maxResults = 8): Promise<Tender[]> {
+export async function searchEisTenders(query: string, maxResults = 8, lawFilter: TenderLawFilter = { law44: true, law223: true }): Promise<Tender[]> {
   const normalizedQuery = normalizeWhitespace(query);
   if (!normalizedQuery) return [];
+  if (!lawFilter.law44 && !lawFilter.law223) return [];
 
-  const cached = fromCache(normalizedQuery);
+  const cacheKey = `${normalizedQuery}::${lawFilterKey(lawFilter)}`;
+  const cached = fromCache(cacheKey);
   if (cached) return cached.slice(0, maxResults);
 
   const searchUrl = `${EIS_SEARCH_URL}?searchString=${encodeURIComponent(normalizedQuery)}`;
   const html = await fetchText(searchUrl);
-  const parsed = parseSearchBlocks(html).slice(0, MAX_RAW_CANDIDATES);
+  const parsed = filterTendersByLaw(parseSearchBlocks(html).slice(0, MAX_RAW_CANDIDATES), lawFilter);
   const ranked = rankAndFilterTenders(parsed, normalizedQuery, maxResults);
 
   const enriched = await Promise.all(
     ranked.map((tender, index) => (index < DETAIL_ENRICH_LIMIT ? enrichTenderFromDetail(tender) : Promise.resolve(tender)))
   );
 
-  const reranked = rankAndFilterTenders(enriched, normalizedQuery, maxResults);
-  remember(normalizedQuery, reranked);
+  const reranked = rankAndFilterTenders(filterTendersByLaw(enriched, lawFilter), normalizedQuery, maxResults);
+  remember(cacheKey, reranked);
   return reranked;
 }

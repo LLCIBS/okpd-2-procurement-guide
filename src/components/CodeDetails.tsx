@@ -1,5 +1,5 @@
 import React from "react";
-import { OKPDCode } from "../types";
+import { OKPDCode, TenderLawFilter } from "../types";
 import { Shield, FileText, AlertTriangle, Scale, CheckCircle2, ArrowLeft, TrendingUp } from "lucide-react";
 import { cn } from "../lib/utils";
 import { motion } from "motion/react";
@@ -11,6 +11,8 @@ interface CodeDetailsProps {
 }
 
 export function CodeDetails({ code, onBack }: CodeDetailsProps) {
+  const defaultLawFilter: TenderLawFilter = { law44: true, law223: true };
+
   const sections = [
     {
       title: "Национальный режим",
@@ -171,7 +173,7 @@ export function CodeDetails({ code, onBack }: CodeDetailsProps) {
 
       {/* Live Tenders Section */}
       <div className="pt-4">
-        <TenderSearch query={code.name} />
+        <TenderSearch query={code.name} lawFilter={defaultLawFilter} onLawFilterChange={() => undefined} />
       </div>
     </div>
   );

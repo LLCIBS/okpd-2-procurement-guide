@@ -1,6 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import { GoogleGenAI } from "@google/genai";
-import type { Tender } from "../types";
+import type { Tender, TenderLawFilter } from "../types";
 import { withGemini429Retry, isGeminiRateLimitError, isGeminiUnavailableError } from "../lib/geminiRetry";
 import { searchEisTenders } from "./eisTenderSearch";
 import { alignTenderLinksWithGrounding } from "./tenderLinkAlign";
@@ -39,6 +39,29 @@ function log(phase: string, detail?: Record<string, unknown>) {
   } else {
     console.log(`[tender-search ${ts}] ${phase}`);
   }
+}
+
+const DEFAULT_LAW_FILTER: TenderLawFilter = { law44: true, law223: true };
+
+function normalizeLawFilter(filter?: Partial<TenderLawFilter> | null): TenderLawFilter {
+  if (!filter || typeof filter !== "object") return DEFAULT_LAW_FILTER;
+  return {
+    law44: filter.law44 !== false,
+    law223: filter.law223 !== false,
+  };
+}
+
+function tenderMatchesLawFilter(tender: Tender, lawFilter: TenderLawFilter): boolean {
+  const platform = String(tender.platform ?? "");
+  if (platform.includes("44-ФЗ")) return lawFilter.law44;
+  if (platform.includes("223-ФЗ")) return lawFilter.law223;
+  return lawFilter.law44 || lawFilter.law223;
+}
+
+function filterTendersByLaw(tenders: Tender[], lawFilter: TenderLawFilter): Tender[] {
+  if (lawFilter.law44 && lawFilter.law223) return tenders;
+  if (!lawFilter.law44 && !lawFilter.law223) return [];
+  return tenders.filter((tender) => tenderMatchesLawFilter(tender, lawFilter));
 }
 
 function normalizeText(value: string): string {
@@ -199,6 +222,7 @@ function mergeTenderLists(primary: Tender[], secondary: Tender[], query: string)
 async function runGeminiTenderSearch(
   query: string,
   apiKey: string,
+  lawFilter: TenderLawFilter,
   proxyUrl?: string | null
 ): Promise<Tender[]> {
   if (!apiKey) {
@@ -219,8 +243,17 @@ async function runGeminiTenderSearch(
   return withGeminiProxy(proxy, async () => {
     const ai = new GoogleGenAI({ apiKey });
 
+    const lawScope = lawFilter.law44 && lawFilter.law223
+      ? "Ищи закупки и по 44-ФЗ, и по 223-ФЗ."
+      : lawFilter.law44
+        ? "Ищи закупки ТОЛЬКО по 44-ФЗ. Позиции по 223-ФЗ не возвращай."
+        : lawFilter.law223
+          ? "Ищи закупки ТОЛЬКО по 223-ФЗ. Позиции по 44-ФЗ не возвращай."
+          : "Если ни один закон не выбран, верни пустой массив.";
+
     const prompt = `Найди актуальные закупки (тендеры) по запросу: "${query}".
       Ориентируйся на официальный ЕИС (zakupki.gov.ru) и крупные ЭТП (Сбербанк-АСТ, РТС-тендер, Росэлторг и т.д.).
+      ${lawScope}
 
       Для КАЖДОЙ позиции в JSON:
       - title: полное наименование из извещения (как в источнике).
@@ -318,7 +351,7 @@ async function runGeminiTenderSearch(
           continue;
         }
 
-        return loose;
+        return filterTendersByLaw(loose, lawFilter);
       } catch (e) {
         lastError = e;
         const canFallback = index < MODELS.length - 1;
@@ -358,23 +391,31 @@ export async function readJsonBody(req: IncomingMessage): Promise<string> {
 export async function runTenderSearch(
   query: string,
   apiKey: string,
+  lawFilterInput?: Partial<TenderLawFilter> | null,
   proxyUrl?: string | null
 ): Promise<Tender[]> {
   const trimmedQuery = query.trim();
+  const lawFilter = normalizeLawFilter(lawFilterInput);
   if (!trimmedQuery) {
     log("пропуск: пустой запрос");
+    return [];
+  }
+
+  if (!lawFilter.law44 && !lawFilter.law223) {
+    log("пропуск: не выбран ни один закон");
     return [];
   }
 
   let eisTenders: Tender[] = [];
   let strictEisCount = 0;
   try {
-    const rawEis = await searchEisTenders(trimmedQuery, 8);
-    const strictEis = sanitizeTenderList(rawEis, trimmedQuery, true);
+    const rawEis = await searchEisTenders(trimmedQuery, 8, lawFilter);
+    const strictEis = filterTendersByLaw(sanitizeTenderList(rawEis, trimmedQuery, true), lawFilter);
     strictEisCount = strictEis.length;
-    eisTenders = strictEis.length > 0 ? strictEis : sanitizeTenderList(rawEis, trimmedQuery, false);
+    eisTenders = strictEis.length > 0 ? strictEis : filterTendersByLaw(sanitizeTenderList(rawEis, trimmedQuery, false), lawFilter);
     log("результат детерминированного поиска ЕИС", {
       queryPreview: trimmedQuery.slice(0, 120),
+      lawFilter,
       rawEisCount: rawEis.length,
       strictEisCount: strictEis.length,
       eisCount: eisTenders.length,
@@ -382,13 +423,17 @@ export async function runTenderSearch(
   } catch (e) {
     log("ошибка детерминированного поиска ЕИС", {
       queryPreview: trimmedQuery.slice(0, 120),
+      lawFilter,
       message: e instanceof Error ? e.message : String(e),
     });
   }
 
   const conceptCount = queryConcepts(trimmedQuery).length;
+  const singleLawSelected = Number(lawFilter.law44) + Number(lawFilter.law223) === 1;
   const shouldReturnEisOnly =
-    isCodeLikeQuery(trimmedQuery)
+    singleLawSelected && eisTenders.length > 0
+      ? true
+      : isCodeLikeQuery(trimmedQuery)
       ? eisTenders.length > 0
       : conceptCount >= 2
         ? strictEisCount > 0
@@ -396,6 +441,8 @@ export async function runTenderSearch(
   if (shouldReturnEisOnly) {
     log("возврат результатов без Gemini — хватило официальных источников", {
       eisCount: eisTenders.length,
+      lawFilter,
+      singleLawSelected,
       codeLikeQuery: isCodeLikeQuery(trimmedQuery),
     });
     return eisTenders;
@@ -412,9 +459,10 @@ export async function runTenderSearch(
   }
 
   try {
-    const geminiTenders = await runGeminiTenderSearch(trimmedQuery, apiKey, proxyUrl);
-    const merged = mergeTenderLists(eisTenders, geminiTenders, trimmedQuery);
+    const geminiTenders = await runGeminiTenderSearch(trimmedQuery, apiKey, lawFilter, proxyUrl);
+    const merged = filterTendersByLaw(mergeTenderLists(eisTenders, geminiTenders, trimmedQuery), lawFilter);
     log("гибридный результат поиска", {
+      lawFilter,
       eisCount: eisTenders.length,
       geminiCount: geminiTenders.length,
       mergedCount: merged.length,
@@ -423,6 +471,7 @@ export async function runTenderSearch(
   } catch (e) {
     if (eisTenders.length > 0) {
       log("Gemini недоступен, возвращаем деградированный результат из ЕИС", {
+        lawFilter,
         eisCount: eisTenders.length,
         message: e instanceof Error ? e.message : String(e),
       });

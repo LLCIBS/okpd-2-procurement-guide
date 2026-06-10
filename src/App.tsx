@@ -5,7 +5,7 @@ import { AIConsultant } from "./components/AIConsultant";
 import { CategoryBrowser } from "./components/CategoryBrowser";
 import { ETPList } from "./components/ETPList";
 import { TenderSearch } from "./components/TenderSearch";
-import { OKPDCode } from "./types";
+import { OKPDCode, TenderLawFilter } from "./types";
 import { BookOpen, HelpCircle, Info, LayoutDashboard, Search as SearchIcon, Settings, Globe } from "lucide-react";
 import { cn } from "./lib/utils";
 import { motion, AnimatePresence } from "motion/react";
@@ -15,6 +15,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'search' | 'guide' | 'etp' | 'settings'>('search');
   const [searchQuery, setSearchQuery] = useState("");
   const [tenderSearchKick, setTenderSearchKick] = useState(0);
+  const [tenderLawFilter, setTenderLawFilter] = useState<TenderLawFilter>({ law44: true, law223: true });
 
   const navItems = [
     { id: 'search', label: 'Поиск ОКПД 2', icon: SearchIcon },
@@ -136,7 +137,12 @@ export default function App() {
                             animate={{ opacity: 1, y: 0 }}
                             className="pt-8"
                           >
-                            <TenderSearch query={searchQuery} searchKick={tenderSearchKick} />
+                            <TenderSearch
+                              query={searchQuery}
+                              searchKick={tenderSearchKick}
+                              lawFilter={tenderLawFilter}
+                              onLawFilterChange={setTenderLawFilter}
+                            />
                           </motion.div>
                         )}
 

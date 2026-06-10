@@ -29,6 +29,11 @@ export interface Tender {
   okpd2?: string;
 }
 
+export interface TenderLawFilter {
+  law44: boolean;
+  law223: boolean;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
