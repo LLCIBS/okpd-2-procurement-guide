@@ -3,12 +3,9 @@ import { ExternalLink, Loader2, Search as SearchIcon, TrendingUp, AlertCircle, D
 import { Tender, TenderLawFilter } from "../types";
 import { motion, AnimatePresence } from "motion/react";
 
-/** Пауза после последнего символа — один запрос к API, не на каждую букву. */
-const DEBOUNCE_MS = 1000;
-
 interface TenderSearchProps {
   query: string;
-  /** Увеличивается при Enter в поле поиска — мгновенный запрос без ожидания debounce. */
+  /** Увеличивается при Enter или кнопке "Поиск" — ручной запуск запроса. */
   searchKick?: number;
   lawFilter: TenderLawFilter;
   onLawFilterChange: React.Dispatch<React.SetStateAction<TenderLawFilter>>;
@@ -18,23 +15,34 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [awaitingPause, setAwaitingPause] = useState(false);
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [submittedQuery, setSubmittedQuery] = useState("");
   const lastKickHandledRef = useRef(searchKick);
+
+  const trimmedQuery = query.trim();
+  const hasActiveQuery = trimmedQuery.length >= 3;
+  const filtersSelected = lawFilter.law44 || lawFilter.law223;
+  const queryIsFresh = submittedQuery === trimmedQuery && submittedQuery.length >= 3;
 
   const fetchTenders = useCallback(async (q: string, filter: TenderLawFilter) => {
     const trimmed = q.trim();
-    if (!trimmed) return;
+    if (trimmed.length < 3) {
+      setTenders([]);
+      setError(null);
+      setSubmittedQuery("");
+      return;
+    }
 
     if (!filter.law44 && !filter.law223) {
       setIsLoading(false);
       setTenders([]);
       setError("Выберите хотя бы один закон: 44-ФЗ и/или 223-ФЗ.");
+      setSubmittedQuery(trimmed);
       return;
     }
 
     setIsLoading(true);
     setError(null);
+    setSubmittedQuery(trimmed);
 
     try {
       const res = await fetch("/api/tender-search", {
@@ -62,48 +70,36 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
     } catch (err) {
       console.error("Tender Search Error:", err);
       setError("Не удалось связаться с сервисом поиска закупок. Проверьте соединение и попробуйте ещё раз.");
+      setTenders([]);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    clearTimeout(debounceTimerRef.current);
-    if (query.trim().length < 3) {
-      setAwaitingPause(false);
-      setTenders([]);
-      setError(null);
-      return;
-    }
-
-    if (!lawFilter.law44 && !lawFilter.law223) {
-      setAwaitingPause(false);
-      setTenders([]);
-      setError("Выберите хотя бы один закон: 44-ФЗ и/или 223-ФЗ.");
-      return;
-    }
-
-    setAwaitingPause(true);
-    debounceTimerRef.current = setTimeout(() => {
-      setAwaitingPause(false);
-      void fetchTenders(query, lawFilter);
-    }, DEBOUNCE_MS);
-
-    return () => {
-      clearTimeout(debounceTimerRef.current);
-    };
-  }, [query, lawFilter, fetchTenders]);
-
-  useEffect(() => {
     if (searchKick === lastKickHandledRef.current) return;
     lastKickHandledRef.current = searchKick;
-    clearTimeout(debounceTimerRef.current);
-    setAwaitingPause(false);
-    const trimmed = query.trim();
-    if (trimmed.length >= 3 && (lawFilter.law44 || lawFilter.law223)) {
-      void fetchTenders(trimmed, lawFilter);
+    void fetchTenders(trimmedQuery, lawFilter);
+  }, [searchKick, trimmedQuery, lawFilter, fetchTenders]);
+
+  useEffect(() => {
+    if (!queryIsFresh || !filtersSelected) return;
+    void fetchTenders(trimmedQuery, lawFilter);
+  }, [lawFilter, queryIsFresh, filtersSelected, trimmedQuery, fetchTenders]);
+
+  useEffect(() => {
+    if (!trimmedQuery) {
+      setError(null);
+      setTenders([]);
+      setSubmittedQuery("");
+      return;
     }
-  }, [searchKick, query, lawFilter, fetchTenders]);
+
+    if (trimmedQuery !== submittedQuery) {
+      setError(null);
+      setTenders([]);
+    }
+  }, [trimmedQuery, submittedQuery]);
 
   return (
     <div className="space-y-6">
@@ -113,8 +109,8 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
           <h3 className="text-lg font-bold text-slate-900">Актуальные закупки в ЕИС</h3>
         </div>
         <button
-          onClick={() => void fetchTenders(query, lawFilter)}
-          disabled={isLoading || query.trim().length < 3 || (!lawFilter.law44 && !lawFilter.law223)}
+          onClick={() => void fetchTenders(trimmedQuery, lawFilter)}
+          disabled={isLoading || trimmedQuery.length < 3 || !filtersSelected}
           className="text-xs font-bold text-blue-600 hover:text-blue-700 uppercase tracking-wider flex items-center gap-1 disabled:opacity-50"
         >
           {isLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <SearchIcon className="h-3 w-3" />}
@@ -122,7 +118,7 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+      <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
         <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Искать по:</span>
         <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer select-none">
           <input
@@ -143,12 +139,6 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
           223-ФЗ
         </label>
       </div>
-
-      {awaitingPause && !isLoading && query.trim().length >= 3 && (
-        <p className="text-xs text-slate-500 text-center">
-          Поиск закупок начнётся через ~1 с после окончания ввода или сразу по клавише Enter
-        </p>
-      )}
 
       <AnimatePresence mode="wait">
         {isLoading ? (
@@ -173,6 +163,26 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
           >
             <AlertCircle className="h-5 w-5 shrink-0" />
             <p className="text-sm font-medium">{error}</p>
+          </motion.div>
+        ) : !hasActiveQuery ? (
+          <motion.div
+            key="idle"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="p-10 text-center bg-white rounded-2xl border border-slate-100"
+          >
+            <SearchIcon className="h-12 w-12 text-slate-200 mx-auto mb-4" />
+            <p className="text-slate-600 font-medium">Введите минимум 3 символа и нажмите кнопку «Поиск» или Enter</p>
+          </motion.div>
+        ) : !queryIsFresh ? (
+          <motion.div
+            key="await-submit"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="p-10 text-center bg-white rounded-2xl border border-slate-100"
+          >
+            <SearchIcon className="h-12 w-12 text-slate-200 mx-auto mb-4" />
+            <p className="text-slate-600 font-medium">Нажмите кнопку «Поиск» или Enter, чтобы обновить выдачу закупок</p>
           </motion.div>
         ) : tenders.length === 0 ? (
           <motion.div
@@ -231,10 +241,7 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
                     </div>
                     <div className="min-w-0">
                       <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">ОКПД 2</p>
-                      <p
-                        className="text-sm font-bold text-slate-900 break-words"
-                        title={tender.okpd2 || undefined}
-                      >
+                      <p className="text-sm font-bold text-slate-900 break-words" title={tender.okpd2 || undefined}>
                         {tender.okpd2?.trim() ? tender.okpd2 : "—"}
                       </p>
                     </div>

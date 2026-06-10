@@ -16,6 +16,7 @@ interface SearchProps {
 export function Search({ onSelect, query, onQueryChange, onTenderSearchSubmit }: SearchProps) {
   const [results, setResults] = useState<OKPDCode[]>([]);
   const [isOpen, setIsOpen] = useState(false);
+  const canSearchTenders = query.trim().length >= 3;
 
   useEffect(() => {
     if (query.length < 2) {
@@ -33,7 +34,8 @@ export function Search({ onSelect, query, onQueryChange, onTenderSearchSubmit }:
 
   return (
     <div className="relative w-full max-w-2xl mx-auto">
-      <div className="relative group">
+      <div className="relative group flex items-center gap-3">
+        <div className="relative flex-1">
         <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
           <SearchIcon className="h-5 w-5 text-gray-400 group-focus-within:text-blue-500 transition-colors" />
         </div>
@@ -53,18 +55,37 @@ export function Search({ onSelect, query, onQueryChange, onTenderSearchSubmit }:
             if (e.key === "Enter" && query.trim().length >= 3) {
               e.preventDefault();
               onTenderSearchSubmit?.();
+              setIsOpen(false);
             }
           }}
           onFocus={() => setIsOpen(true)}
         />
         {query && (
           <button
-            onClick={() => onQueryChange("")}
+            onClick={() => {
+              onQueryChange("");
+              setIsOpen(false);
+            }}
             className="absolute inset-y-0 right-0 pr-3 flex items-center"
           >
             <X className="h-4 w-4 text-gray-400 hover:text-gray-600" />
           </button>
         )}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            if (!canSearchTenders) return;
+            onTenderSearchSubmit?.();
+            setIsOpen(false);
+          }}
+          disabled={!canSearchTenders}
+          className="shrink-0 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white shadow-sm transition-all hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-100"
+        >
+          <SearchIcon className="h-4 w-4" />
+          Поиск
+        </button>
       </div>
 
       <AnimatePresence>

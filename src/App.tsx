@@ -131,20 +131,18 @@ export default function App() {
                           onTenderSearchSubmit={() => setTenderSearchKick((k) => k + 1)}
                         />
 
-                        {searchQuery.length >= 3 && (
-                          <motion.div
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            className="pt-8"
-                          >
-                            <TenderSearch
-                              query={searchQuery}
-                              searchKick={tenderSearchKick}
-                              lawFilter={tenderLawFilter}
-                              onLawFilterChange={setTenderLawFilter}
-                            />
-                          </motion.div>
-                        )}
+                        <motion.div
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="pt-8"
+                        >
+                          <TenderSearch
+                            query={searchQuery}
+                            searchKick={tenderSearchKick}
+                            lawFilter={tenderLawFilter}
+                            onLawFilterChange={setTenderLawFilter}
+                          />
+                        </motion.div>
 
                         {!searchQuery && (
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-12">
