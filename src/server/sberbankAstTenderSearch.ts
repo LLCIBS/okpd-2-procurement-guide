@@ -1,8 +1,6 @@
-import type { Tender } from "../types";
+import type { Tender, TenderLawFilter } from "../types";
 
-const SEARCH_URL = "https://www.sberbank-ast.ru/SearchQuery.aspx?name=Main";
-const REFERER_URL = "https://www.sberbank-ast.ru/purchaseList.aspx";
-const REQUEST_TIMEOUT_MS = 25_000;
+const REQUEST_TIMEOUT_MS = 10_000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_MAX_ENTRIES = 100;
 
@@ -137,14 +135,11 @@ function chooseDisplayTitle(title: string, productNames: string, query: string):
   return `${title} — ${productNames}`;
 }
 
-function buildRestrictions(isSmp: string, adRequirement: string): string {
-  const parts: string[] = [];
-  if (isSmp) parts.push(`СМП: ${isSmp}`);
-  if (adRequirement) parts.push(`Доп. требования: ${adRequirement}`);
-  return parts.join("; ");
+function buildRestrictions(...parts: Array<string | undefined>): string {
+  return parts.map((part) => normalizeWhitespace(part ?? "")).filter(Boolean).join("; ");
 }
 
-function buildSearchXml(query: string, size: number): string {
+function buildSearchXml44(query: string, size: number): string {
   const escapedQuery = query
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -153,19 +148,65 @@ function buildSearchXml(query: string, size: number): string {
   return `<elasticrequest><personid>0</personid><buid>0</buid><filters><mainSearchBar><value>${escapedQuery}</value><type>phrase_prefix</type><minimum_should_match>100%</minimum_should_match></mainSearchBar></filters><sort><value>default</value><direction></direction></sort><aggregations><empty><filterType>filter_aggregation</filterType><field></field></empty></aggregations><size>${size}</size><from>0</from></elasticrequest>`;
 }
 
+function buildSearchXml223(query: string, size: number): string {
+  const escapedQuery = query
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  const fields = [
+    "TradeSectionId",
+    "purchAmount",
+    "purchCurrency",
+    "purchCode",
+    "PurchaseTypeName",
+    "OrgName",
+    "PublicDate",
+    "RequestDate",
+    "RequestStartDate",
+    "AuctionBeginDate",
+    "purchName",
+    "BidName",
+    "BidNo",
+    "Bid_Id",
+    "SourceHrefTerm",
+    "bidHrefTerm",
+    "objectHrefTerm",
+    "CreateRequestHrefTerm",
+    "PurchaseState",
+    "RequestCntState",
+    "PurchaseId",
+    "PurchaseName",
+    "CurrentAmount",
+    "PurchaseWayTerm",
+    "RegionName",
+    "RegionNameTerm",
+    "PurchaseTypeId",
+    "PeculiaritiesInfo",
+    "PeculiaritiesInfoList",
+    "productCodes",
+    "productNames",
+    "productDictionary",
+    "IsSMPTerm",
+  ].map((field) => `<field>${field}</field>`).join("");
+
+  return `<elasticrequest><filters><mainSearchBar><value>${escapedQuery}</value><type>best_fields</type><minimum_should_match>100%</minimum_should_match></mainSearchBar></filters><_source>${fields}</_source><sort><value>default</value><direction></direction></sort><aggs><buckets><field></field><size>200</size><type></type><min_doc_count>0</min_doc_count><include>.*</include></buckets></aggs><size>${size}</size><from>0</from></elasticrequest>`;
+}
+
 function parseDateToAgeDays(date: string): number | null {
   const normalized = normalizeWhitespace(date);
-  const match = /^(\d{2})\.(\d{2})\.(\d{4})/.exec(normalized) ?? /^(\d{4})-(\d{2})-(\d{2})/.exec(normalized)?.map((v, i) => (i === 1 ? v : i === 2 ? v : i === 3 ? v : v)) as RegExpExecArray | null;
-  if (!match) return null;
+  const dotMatch = /^(\d{2})\.(\d{2})\.(\d{4})/.exec(normalized);
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})/.exec(normalized);
+  if (!dotMatch && !isoMatch) return null;
 
-  let dd: string;
-  let mm: string;
-  let yyyy: string;
+  let dd = "";
+  let mm = "";
+  let yyyy = "";
 
-  if (normalized.includes(".")) {
-    [, dd, mm, yyyy] = match;
-  } else {
-    [, yyyy, mm, dd] = match;
+  if (dotMatch) {
+    [, dd, mm, yyyy] = dotMatch;
+  } else if (isoMatch) {
+    [, yyyy, mm, dd] = isoMatch;
   }
 
   const ts = Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd));
@@ -225,7 +266,7 @@ function passesRelevanceThreshold(tender: Tender, query: string): boolean {
   return score >= 30;
 }
 
-function parseSearchHits(tableXml: string, query: string): Tender[] {
+function parse44Hits(tableXml: string, query: string): Tender[] {
   const hits = [...tableXml.matchAll(/<hits>([\s\S]*?)<\/hits>/g)].map((match) => match[1]);
   const seen = new Set<string>();
   const out: Tender[] = [];
@@ -234,10 +275,14 @@ function parseSearchHits(tableXml: string, query: string): Tender[] {
     const titleBase = extractFirst("BidName", hit) || extractFirst("purchName", hit);
     const productNames = extractFirst("productNames", hit);
     const title = chooseDisplayTitle(titleBase, productNames, query);
-    const link = extractFirst("objectHrefTerm", hit) || extractFirst("CreateRequestHrefTerm", hit) || extractFirst("OOSHref", hit) || REFERER_URL;
+    const link = extractFirst("objectHrefTerm", hit) || extractFirst("CreateRequestHrefTerm", hit) || extractFirst("OOSHref", hit);
     const price = formatPrice(extractFirst("purchAmount", hit), extractFirst("purchCurrency", hit));
     const date = extractFirst("PublicDate", hit) || extractFirst("RequestStartDate", hit) || extractFirst("EndDate", hit) || "Дата не указана";
-    const restrictions = buildRestrictions(extractFirst("IsSMPTerm", hit), extractFirst("AdRequirementEnable", hit));
+    const restrictions = buildRestrictions(
+      extractFirst("IsSMPTerm", hit) ? `СМП: ${extractFirst("IsSMPTerm", hit)}` : "",
+      extractFirst("AdRequirementEnable", hit) ? `Доп. требования: ${extractFirst("AdRequirementEnable", hit)}` : "",
+      extractFirst("PurchaseState", hit)
+    );
     const okpdCodes = [
       ...extractOkpdCodes(extractFirst("purchOKDP", hit)),
       ...extractOkpdCodesFromProductCodes(extractFirst("productCodes", hit)),
@@ -251,6 +296,57 @@ function parseSearchHits(tableXml: string, query: string): Tender[] {
       restrictions,
       link,
       platform: "Сбербанк-АСТ · 44-ФЗ",
+      date,
+      okpd2: [...new Set(okpdCodes)].slice(0, 3).join(", "),
+    };
+
+    if (!title || !link || !passesRelevanceThreshold(tender, query)) continue;
+
+    const dedupeKey = `${normalizeText(title)}|${link}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push(tender);
+  }
+
+  return out;
+}
+
+function parse223Hits(tableXml: string, query: string): Tender[] {
+  const hits = [...tableXml.matchAll(/<hits>([\s\S]*?)<\/hits>/g)].map((match) => match[1]);
+  const seen = new Set<string>();
+  const out: Tender[] = [];
+
+  for (const hit of hits) {
+    const titleBase = extractFirst("BidName", hit) || extractFirst("PurchaseName", hit) || extractFirst("purchName", hit);
+    const productNames = extractFirst("productNames", hit);
+    const title = chooseDisplayTitle(titleBase, productNames, query);
+    const link = extractFirst("objectHrefTerm", hit) || extractFirst("bidHrefTerm", hit) || extractFirst("CreateRequestHrefTerm", hit);
+    const price = formatPrice(extractFirst("purchAmount", hit) || extractFirst("CurrentAmount", hit), extractFirst("purchCurrency", hit));
+    const date =
+      extractFirst("PublicDate", hit) ||
+      extractFirst("RequestStartDate", hit) ||
+      extractFirst("RequestDate", hit) ||
+      extractFirst("AuctionBeginDate", hit) ||
+      "Дата не указана";
+    const okpdCodes = [
+      ...extractOkpdCodes(extractFirst("PeculiaritiesInfo", hit)),
+      ...extractOkpdCodes(extractFirst("PeculiaritiesInfoList", hit)),
+      ...extractOkpdCodesFromProductCodes(extractFirst("productCodes", hit)),
+    ];
+    const restrictions = buildRestrictions(
+      extractFirst("PurchaseState", hit),
+      extractFirst("PurchaseTypeName", hit),
+      extractFirst("IsSMPTerm", hit) ? `СМП: ${extractFirst("IsSMPTerm", hit)}` : ""
+    );
+    const id = extractFirst("PurchaseId", hit) || extractFirst("Bid_Id", hit) || `${title}_${link}`;
+
+    const tender: Tender = {
+      id,
+      title,
+      price,
+      restrictions,
+      link,
+      platform: "Сбербанк-АСТ · 223-ФЗ",
       date,
       okpd2: [...new Set(okpdCodes)].slice(0, 3).join(", "),
     };
@@ -288,26 +384,20 @@ function fromCache(cacheKey: string): Tender[] | null {
   return hit.tenders.map((tender) => ({ ...tender }));
 }
 
-async function postSearch(query: string, size: number): Promise<string> {
+async function postForm(url: string, referer: string, origin: string, body: URLSearchParams): Promise<unknown> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
-    const body = new URLSearchParams({
-      xmlData: buildSearchXml(query, size),
-      orgId: "0",
-      targetPageCode: "ESPurchaseList",
-      PID: "0",
-    });
-
-    const response = await fetch(SEARCH_URL, {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
         "user-agent": "Mozilla/5.0 (compatible; okpd-asissto-bot/1.0; +https://okpd.asissto.ru)",
         accept: "application/json,text/plain,*/*",
         "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-        referer: REFERER_URL,
-        origin: "https://www.sberbank-ast.ru",
+        referer,
+        origin,
+        "x-requested-with": "XMLHttpRequest",
       },
       body,
       signal: controller.signal,
@@ -317,29 +407,104 @@ async function postSearch(query: string, size: number): Promise<string> {
       throw new Error(`Sberbank-AST HTTP ${response.status}`);
     }
 
-    return await response.text();
+    return await response.json();
   } finally {
     clearTimeout(timeout);
   }
 }
 
-export async function searchSberbankAstTenders(query: string, maxResults = 8): Promise<Tender[]> {
-  const normalizedQuery = normalizeWhitespace(query);
-  if (!normalizedQuery) return [];
-
-  const cacheKey = `${normalizedQuery}::${maxResults}`;
+async function searchSber44(query: string, maxResults: number): Promise<Tender[]> {
+  const cacheKey = `44::${query}::${maxResults}`;
   const cached = fromCache(cacheKey);
   if (cached) return cached.slice(0, maxResults);
 
-  const raw = await postSearch(normalizedQuery, Math.max(20, maxResults * 2));
-  const outer = JSON.parse(raw) as { result?: string; data?: string };
-  if (outer.result !== "success" || !outer.data) return [];
+  const body = new URLSearchParams({
+    xmlData: buildSearchXml44(query, Math.max(20, maxResults * 2)),
+    orgId: "0",
+    targetPageCode: "ESPurchaseList",
+    PID: "0",
+  });
 
-  const inner = JSON.parse(outer.data) as { tableXml?: string };
-  const parsed = parseSearchHits(inner.tableXml ?? "", normalizedQuery)
-    .sort((a, b) => scoreTenderForQuery(b, normalizedQuery) - scoreTenderForQuery(a, normalizedQuery))
+  const raw = await postForm(
+    "https://www.sberbank-ast.ru/SearchQuery.aspx?name=Main",
+    "https://www.sberbank-ast.ru/purchaseList.aspx",
+    "https://www.sberbank-ast.ru",
+    body
+  ) as { result?: string; data?: string };
+
+  if (raw.result !== "success" || !raw.data) return [];
+
+  const inner = JSON.parse(raw.data) as { tableXml?: string };
+  const parsed = parse44Hits(inner.tableXml ?? "", query)
+    .sort((a, b) => scoreTenderForQuery(b, query) - scoreTenderForQuery(a, query))
     .slice(0, maxResults);
 
   remember(cacheKey, parsed);
   return parsed;
+}
+
+async function searchSber223(query: string, maxResults: number): Promise<Tender[]> {
+  const cacheKey = `223::${query}::${maxResults}`;
+  const cached = fromCache(cacheKey);
+  if (cached) return cached.slice(0, maxResults);
+
+  const body = new URLSearchParams({
+    xmlData: buildSearchXml223(query, Math.max(20, maxResults * 2)),
+    orgId: "0",
+    buId: "0",
+    personId: "0",
+    buMainId: "0",
+    personMainId: "0",
+  });
+
+  const raw = await postForm(
+    "https://utp.sberbank-ast.ru/Trade/SearchQuery/BidList",
+    "https://utp.sberbank-ast.ru/Trade/List/BidList",
+    "https://utp.sberbank-ast.ru",
+    body
+  ) as { result?: string; data?: { Data?: { tableXml?: string } } };
+
+  const tableXml = raw.result === "success" ? raw.data?.Data?.tableXml ?? "" : "";
+  const parsed = parse223Hits(tableXml, query)
+    .sort((a, b) => scoreTenderForQuery(b, query) - scoreTenderForQuery(a, query))
+    .slice(0, maxResults);
+
+  remember(cacheKey, parsed);
+  return parsed;
+}
+
+function mergeTenderLists(tenders: Tender[], query: string, maxResults: number): Tender[] {
+  const seen = new Set<string>();
+  return tenders
+    .filter((tender) => {
+      const key = `${normalizeText(tender.title)}|${tender.link}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => scoreTenderForQuery(b, query) - scoreTenderForQuery(a, query))
+    .slice(0, maxResults);
+}
+
+export async function searchSberbankAstTenders(
+  query: string,
+  maxResults = 8,
+  lawFilter: TenderLawFilter = { law44: true, law223: true }
+): Promise<Tender[]> {
+  const normalizedQuery = normalizeWhitespace(query);
+  if (!normalizedQuery) return [];
+  if (!lawFilter.law44 && !lawFilter.law223) return [];
+
+  const tasks: Array<Promise<Tender[]>> = [];
+  if (lawFilter.law44) tasks.push(searchSber44(normalizedQuery, maxResults));
+  if (lawFilter.law223) tasks.push(searchSber223(normalizedQuery, maxResults));
+
+  const settled = await Promise.allSettled(tasks);
+  const merged = mergeTenderLists(
+    settled.flatMap((result) => (result.status === "fulfilled" ? result.value : [])),
+    normalizedQuery,
+    maxResults
+  );
+
+  return merged;
 }

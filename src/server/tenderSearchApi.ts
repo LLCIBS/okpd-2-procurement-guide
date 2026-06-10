@@ -446,56 +446,65 @@ export async function runTenderSearch(
 
   let eisTenders: Tender[] = [];
   let strictEisCount = 0;
+  let sberbankTenders: Tender[] = [];
+
+  const sourceTasks: Array<Promise<void>> = [];
+
   if (platformFilter.eis) {
-    try {
-      const rawEis = await searchEisTenders(trimmedQuery, 8, lawFilter);
-      const strictEis = filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawEis, trimmedQuery, true), lawFilter), platformFilter);
-      strictEisCount = strictEis.length;
-      eisTenders = strictEis.length > 0
-        ? strictEis
-        : filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawEis, trimmedQuery, false), lawFilter), platformFilter);
-      log("результат детерминированного поиска ЕИС", {
-        queryPreview: trimmedQuery.slice(0, 120),
-        lawFilter,
-        platformFilter,
-        rawEisCount: rawEis.length,
-        strictEisCount: strictEis.length,
-        eisCount: eisTenders.length,
-      });
-    } catch (e) {
-      log("ошибка детерминированного поиска ЕИС", {
-        queryPreview: trimmedQuery.slice(0, 120),
-        lawFilter,
-        platformFilter,
-        message: e instanceof Error ? e.message : String(e),
-      });
-    }
+    sourceTasks.push((async () => {
+      try {
+        const rawEis = await searchEisTenders(trimmedQuery, 8, lawFilter);
+        const strictEis = filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawEis, trimmedQuery, true), lawFilter), platformFilter);
+        strictEisCount = strictEis.length;
+        eisTenders = strictEis.length > 0
+          ? strictEis
+          : filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawEis, trimmedQuery, false), lawFilter), platformFilter);
+        log("результат детерминированного поиска ЕИС", {
+          queryPreview: trimmedQuery.slice(0, 120),
+          lawFilter,
+          platformFilter,
+          rawEisCount: rawEis.length,
+          strictEisCount: strictEis.length,
+          eisCount: eisTenders.length,
+        });
+      } catch (e) {
+        log("ошибка детерминированного поиска ЕИС", {
+          queryPreview: trimmedQuery.slice(0, 120),
+          lawFilter,
+          platformFilter,
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    })());
   }
 
-  let sberbankTenders: Tender[] = [];
-  if (platformFilter.sberAst && lawFilter.law44) {
-    try {
-      const rawSberbank = await searchSberbankAstTenders(trimmedQuery, 8);
-      const strictSberbank = filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawSberbank, trimmedQuery, true), lawFilter), platformFilter);
-      sberbankTenders = strictSberbank.length > 0
-        ? strictSberbank
-        : filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawSberbank, trimmedQuery, false), lawFilter), platformFilter);
-      log("результат детерминированного поиска Сбербанк-АСТ", {
-        queryPreview: trimmedQuery.slice(0, 120),
-        lawFilter,
-        platformFilter,
-        rawSberbankCount: rawSberbank.length,
-        sberbankCount: sberbankTenders.length,
-      });
-    } catch (e) {
-      log("ошибка детерминированного поиска Сбербанк-АСТ", {
-        queryPreview: trimmedQuery.slice(0, 120),
-        lawFilter,
-        platformFilter,
-        message: e instanceof Error ? e.message : String(e),
-      });
-    }
+  if (platformFilter.sberAst && (lawFilter.law44 || lawFilter.law223)) {
+    sourceTasks.push((async () => {
+      try {
+        const rawSberbank = await searchSberbankAstTenders(trimmedQuery, 8, lawFilter);
+        const strictSberbank = filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawSberbank, trimmedQuery, true), lawFilter), platformFilter);
+        sberbankTenders = strictSberbank.length > 0
+          ? strictSberbank
+          : filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawSberbank, trimmedQuery, false), lawFilter), platformFilter);
+        log("результат детерминированного поиска Сбербанк-АСТ", {
+          queryPreview: trimmedQuery.slice(0, 120),
+          lawFilter,
+          platformFilter,
+          rawSberbankCount: rawSberbank.length,
+          sberbankCount: sberbankTenders.length,
+        });
+      } catch (e) {
+        log("ошибка детерминированного поиска Сбербанк-АСТ", {
+          queryPreview: trimmedQuery.slice(0, 120),
+          lawFilter,
+          platformFilter,
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    })());
   }
+
+  await Promise.all(sourceTasks);
 
   const officialTenders = filterTendersByPlatform(
     filterTendersByLaw(mergeTenderLists(eisTenders, sberbankTenders, trimmedQuery), lawFilter),
