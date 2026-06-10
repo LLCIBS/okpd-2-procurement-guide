@@ -236,6 +236,42 @@ function extractOkpdCodes(detailHtml: string): string[] {
   return [...codes];
 }
 
+function extractOkpdCodesFromText(value: string): string[] {
+  const codes = new Set<string>();
+  for (const match of value.matchAll(/\b\d{2}\.\d{2}\.\d{2}(?:\.\d{3})?\b/g)) {
+    codes.add(match[0]);
+  }
+  return [...codes];
+}
+
+function extract223LotListUrl(detailHtml: string): string {
+  const hrefMatch = detailHtml.match(/(?:href|data-url)="([^"]*\/epz\/order\/notice\/notice223\/lot-list\.html\?[^"]+)"/i);
+  if (!hrefMatch?.[1]) return "";
+  return absoluteZakupkiUrl(hrefMatch[1].replace(/&amp;/g, "&"));
+}
+
+async function extract223LotListOkpdCodes(detailHtml: string): Promise<string[]> {
+  const lotListUrl = extract223LotListUrl(detailHtml);
+  if (!lotListUrl) return [];
+
+  const lotListHtml = await fetchText(lotListUrl);
+  const rowMatches = [...lotListHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)].map((match) => match[1]);
+  const codes = new Set<string>();
+
+  for (const row of rowMatches) {
+    if (!/lot-info\.html/i.test(row)) continue;
+    const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => match[1]);
+    if (cells.length < 4) continue;
+
+    for (const code of extractOkpdCodesFromText(stripTags(cells[3]))) {
+      codes.add(code);
+    }
+  }
+
+  if (codes.size > 0) return [...codes];
+  return extractOkpdCodes(lotListHtml);
+}
+
 function extractNationalRegimeRestrictions(detailHtml: string): string[] {
   const tableMatch = /<div class="tabBoxWrapper tabBoxWrapper__mb24" id="national-regimen-table-pagination-id">([\s\S]*?)<\/table>/i.exec(detailHtml);
   if (!tableMatch) return [];
@@ -264,7 +300,10 @@ async function enrichTenderFromDetail(tender: Tender): Promise<Tender> {
   try {
     const detailHtml = await fetchText(tender.link);
     const title = tender.title || extractDetailTitle(detailHtml);
-    const okpdCodes = extractOkpdCodes(detailHtml);
+    let okpdCodes = extractOkpdCodes(detailHtml);
+    if (okpdCodes.length === 0 && tender.platform.includes("223-ФЗ")) {
+      okpdCodes = await extract223LotListOkpdCodes(detailHtml);
+    }
     const restrictionLines = extractNationalRegimeRestrictions(detailHtml);
 
     return {
