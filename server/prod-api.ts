@@ -5,6 +5,7 @@
  */
 import express from "express";
 import dotenv from "dotenv";
+import { isGeminiRateLimitError, isGeminiUnavailableError } from "../src/lib/geminiRetry";
 import { resolveGeminiProxyUrl } from "../src/server/geminiProxy";
 import { runTenderSearch } from "../src/server/tenderSearchApi";
 
@@ -32,9 +33,31 @@ app.post("/api/tender-search", async (req, res) => {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.json({ tenders });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
     console.error("[prod-api] /api/tender-search:", e);
-    res.status(500).json({ error: msg });
+
+    if (isGeminiUnavailableError(e)) {
+      res.status(503).json({
+        error: "AI-поиск закупок временно перегружен. Я автоматически попробовал резервную модель, но сейчас Google всё ещё отвечает нестабильно. Повторите запрос через 10–30 секунд.",
+      });
+      return;
+    }
+
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/fetch failed|timeout|timed out|ECONNRESET|UND_ERR/i.test(msg)) {
+      res.status(503).json({
+        error: "AI-поиск закупок временно недоступен из-за сбоя соединения с провайдером. Попробуйте повторить запрос через 10–30 секунд.",
+      });
+      return;
+    }
+
+    if (isGeminiRateLimitError(e)) {
+      res.status(429).json({
+        error: "AI-поиск закупок временно упёрся в лимит провайдера. Попробуйте повторить запрос чуть позже.",
+      });
+      return;
+    }
+
+    res.status(500).json({ error: msg || "Не удалось выполнить AI-поиск закупок. Попробуйте позже." });
   }
 });
 

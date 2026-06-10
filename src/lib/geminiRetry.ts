@@ -7,16 +7,16 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** Распознаёт ответы Google с кодом 429 и связанные обёртки SDK. */
-export function isGeminiRateLimitError(error: unknown): boolean {
+function hasGeminiStatus(error: unknown, code: number, textStatus: string): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 8 && current != null; depth++) {
     if (typeof current === "object") {
       const e = current as Record<string, unknown>;
-      if (e.status === 429 || e.code === 429) return true;
+      if (e.status === code || e.code === code || e.status === textStatus) return true;
       const nested = e.error;
       if (nested && typeof nested === "object") {
         const n = nested as Record<string, unknown>;
-        if (n.code === 429 || n.status === "RESOURCE_EXHAUSTED") return true;
+        if (n.code === code || n.status === textStatus) return true;
       }
       if ("cause" in e && e.cause != null) {
         current = e.cause;
@@ -26,8 +26,15 @@ export function isGeminiRateLimitError(error: unknown): boolean {
     break;
   }
   const msg = error instanceof Error ? error.message : String(error);
-  // Текст ответа API / SDK: достаточно признака 429 для повтора в этом контексте.
-  return /\b429\b/.test(msg);
+  return new RegExp(`\\b${code}\\b|${textStatus}`, "i").test(msg);
+}
+
+export function isGeminiRateLimitError(error: unknown): boolean {
+  return hasGeminiStatus(error, 429, "RESOURCE_EXHAUSTED");
+}
+
+export function isGeminiUnavailableError(error: unknown): boolean {
+  return hasGeminiStatus(error, 503, "UNAVAILABLE");
 }
 
 export type Gemini429RetryOptions = {

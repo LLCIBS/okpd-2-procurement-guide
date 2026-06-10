@@ -35,7 +35,15 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
       const payload = (await res.json()) as { tenders?: Tender[]; error?: string };
 
       if (!res.ok) {
-        setError(payload.error ?? `Ошибка сервера (${res.status})`);
+        const fallbackMessage =
+          res.status === 503
+            ? "AI-поиск закупок сейчас перегружен. Уже пробуем резервную модель, но Google отвечает нестабильно. Повторите запрос через 10–30 секунд."
+            : res.status === 429
+              ? "AI-поиск закупок временно упёрся в лимит провайдера. Попробуйте ещё раз чуть позже."
+              : res.status >= 500
+                ? "Не удалось получить актуальные закупки. Попробуйте повторить запрос немного позже."
+                : `Ошибка поиска (${res.status})`;
+        setError(payload.error?.trim() || fallbackMessage);
         setTenders([]);
         return;
       }
@@ -43,7 +51,7 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
       setTenders(payload.tenders ?? []);
     } catch (err) {
       console.error("Tender Search Error:", err);
-      setError("Не удалось загрузить актуальные закупки. Попробуйте позже.");
+      setError("Не удалось связаться с сервисом поиска закупок. Проверьте соединение и попробуйте ещё раз.");
     } finally {
       setIsLoading(false);
     }
@@ -114,8 +122,7 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
           >
             <Loader2 className="h-8 w-8 text-blue-600 animate-spin" />
             <p className="text-sm text-slate-500 font-medium text-center max-w-md">
-              Ищем закупки (Gemini + поиск в интернете). Обычно 30–120 сек — прогресс смотрите в терминале, где запущен{" "}
-              <code className="text-xs bg-slate-100 px-1 rounded">npm run dev</code>
+              Сначала проверяем официальный ЕИС, затем при необходимости дополняем результаты AI-поиском. Обычно это занимает 5–30 секунд.
             </p>
           </motion.div>
         ) : error ? (
@@ -199,8 +206,8 @@ export function TenderSearch({ query, searchKick = 0 }: TenderSearchProps) {
                     </div>
                     <div className="min-w-0">
                       <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Ограничения</p>
-                      <p className="text-sm font-bold text-slate-900 truncate sm:max-w-none lg:truncate lg:max-w-[220px]" title={tender.restrictions}>
-                        {tender.restrictions}
+                      <p className="text-sm font-bold text-slate-900 truncate sm:max-w-none lg:truncate lg:max-w-[220px]" title={tender.restrictions || undefined}>
+                        {tender.restrictions?.trim() ? tender.restrictions : "Не указаны"}
                       </p>
                     </div>
                   </div>
