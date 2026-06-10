@@ -34,6 +34,11 @@ export interface TenderLawFilter {
   law223: boolean;
 }
 
+export interface TenderPlatformFilter {
+  eis: boolean;
+  sberAst: boolean;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;

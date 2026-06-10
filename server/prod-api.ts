@@ -36,7 +36,14 @@ app.post("/api/tender-search", async (req, res) => {
             law223: Boolean((req.body as { lawFilter?: { law223?: unknown } }).lawFilter?.law223),
           }
         : undefined;
-    const tenders = await runTenderSearch(query, apiKey, lawFilter, proxyUrl);
+    const platformFilter =
+      typeof req.body === "object" && req.body !== null && "platformFilter" in req.body && typeof (req.body as { platformFilter?: unknown }).platformFilter === "object"
+        ? {
+            eis: (req.body as { platformFilter?: { eis?: unknown } }).platformFilter?.eis !== false,
+            sberAst: Boolean((req.body as { platformFilter?: { sberAst?: unknown } }).platformFilter?.sberAst),
+          }
+        : undefined;
+    const tenders = await runTenderSearch(query, apiKey, lawFilter, platformFilter, proxyUrl);
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.json({ tenders });
   } catch (e) {

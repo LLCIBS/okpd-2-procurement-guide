@@ -1,8 +1,9 @@
 import type { IncomingMessage } from "node:http";
 import { GoogleGenAI } from "@google/genai";
-import type { Tender, TenderLawFilter } from "../types";
+import type { Tender, TenderLawFilter, TenderPlatformFilter } from "../types";
 import { withGemini429Retry, isGeminiRateLimitError, isGeminiUnavailableError } from "../lib/geminiRetry";
 import { searchEisTenders } from "./eisTenderSearch";
+import { searchSberbankAstTenders } from "./sberbankAstTenderSearch";
 import { alignTenderLinksWithGrounding } from "./tenderLinkAlign";
 import { maskProxyForLog, withGeminiProxy } from "./geminiProxy";
 
@@ -42,12 +43,21 @@ function log(phase: string, detail?: Record<string, unknown>) {
 }
 
 const DEFAULT_LAW_FILTER: TenderLawFilter = { law44: true, law223: true };
+const DEFAULT_PLATFORM_FILTER: TenderPlatformFilter = { eis: true, sberAst: false };
 
 function normalizeLawFilter(filter?: Partial<TenderLawFilter> | null): TenderLawFilter {
   if (!filter || typeof filter !== "object") return DEFAULT_LAW_FILTER;
   return {
     law44: filter.law44 !== false,
     law223: filter.law223 !== false,
+  };
+}
+
+function normalizePlatformFilter(filter?: Partial<TenderPlatformFilter> | null): TenderPlatformFilter {
+  if (!filter || typeof filter !== "object") return DEFAULT_PLATFORM_FILTER;
+  return {
+    eis: filter.eis !== false,
+    sberAst: filter.sberAst === true,
   };
 }
 
@@ -62,6 +72,19 @@ function filterTendersByLaw(tenders: Tender[], lawFilter: TenderLawFilter): Tend
   if (lawFilter.law44 && lawFilter.law223) return tenders;
   if (!lawFilter.law44 && !lawFilter.law223) return [];
   return tenders.filter((tender) => tenderMatchesLawFilter(tender, lawFilter));
+}
+
+function tenderMatchesPlatformFilter(tender: Tender, platformFilter: TenderPlatformFilter): boolean {
+  const platform = String(tender.platform ?? "");
+  if (platform.includes("Сбербанк-АСТ")) return platformFilter.sberAst;
+  if (platform.includes("ЕИС")) return platformFilter.eis;
+  return platformFilter.eis;
+}
+
+function filterTendersByPlatform(tenders: Tender[], platformFilter: TenderPlatformFilter): Tender[] {
+  if (platformFilter.eis && platformFilter.sberAst) return tenders;
+  if (!platformFilter.eis && !platformFilter.sberAst) return [];
+  return tenders.filter((tender) => tenderMatchesPlatformFilter(tender, platformFilter));
 }
 
 function normalizeText(value: string): string {
@@ -223,6 +246,7 @@ async function runGeminiTenderSearch(
   query: string,
   apiKey: string,
   lawFilter: TenderLawFilter,
+  platformFilter: TenderPlatformFilter,
   proxyUrl?: string | null
 ): Promise<Tender[]> {
   if (!apiKey) {
@@ -250,9 +274,16 @@ async function runGeminiTenderSearch(
         : lawFilter.law223
           ? "Ищи закупки ТОЛЬКО по 223-ФЗ. Позиции по 44-ФЗ не возвращай."
           : "Если ни один закон не выбран, верни пустой массив.";
+    const platformScope = platformFilter.eis && platformFilter.sberAst
+      ? "Ищи закупки только на ЕИС (zakupki.gov.ru) и Сбербанк-АСТ (sberbank-ast.ru). Другие площадки не используй."
+      : platformFilter.eis
+        ? "Ищи закупки ТОЛЬКО на официальном ЕИС (zakupki.gov.ru). Другие площадки не используй."
+        : platformFilter.sberAst
+          ? "Ищи закупки ТОЛЬКО на Сбербанк-АСТ (sberbank-ast.ru). Другие площадки не используй."
+          : "Если ни одна площадка не выбрана, верни пустой массив.";
 
     const prompt = `Найди актуальные закупки (тендеры) по запросу: "${query}".
-      Ориентируйся на официальный ЕИС (zakupki.gov.ru) и крупные ЭТП (Сбербанк-АСТ, РТС-тендер, Росэлторг и т.д.).
+      ${platformScope}
       ${lawScope}
 
       Для КАЖДОЙ позиции в JSON:
@@ -392,10 +423,12 @@ export async function runTenderSearch(
   query: string,
   apiKey: string,
   lawFilterInput?: Partial<TenderLawFilter> | null,
+  platformFilterInput?: Partial<TenderPlatformFilter> | null,
   proxyUrl?: string | null
 ): Promise<Tender[]> {
   const trimmedQuery = query.trim();
   const lawFilter = normalizeLawFilter(lawFilterInput);
+  const platformFilter = normalizePlatformFilter(platformFilterInput);
   if (!trimmedQuery) {
     log("пропуск: пустой запрос");
     return [];
@@ -406,28 +439,70 @@ export async function runTenderSearch(
     return [];
   }
 
-  let eisTenders: Tender[] = [];
-  let strictEisCount = 0;
-  try {
-    const rawEis = await searchEisTenders(trimmedQuery, 8, lawFilter);
-    const strictEis = filterTendersByLaw(sanitizeTenderList(rawEis, trimmedQuery, true), lawFilter);
-    strictEisCount = strictEis.length;
-    eisTenders = strictEis.length > 0 ? strictEis : filterTendersByLaw(sanitizeTenderList(rawEis, trimmedQuery, false), lawFilter);
-    log("результат детерминированного поиска ЕИС", {
-      queryPreview: trimmedQuery.slice(0, 120),
-      lawFilter,
-      rawEisCount: rawEis.length,
-      strictEisCount: strictEis.length,
-      eisCount: eisTenders.length,
-    });
-  } catch (e) {
-    log("ошибка детерминированного поиска ЕИС", {
-      queryPreview: trimmedQuery.slice(0, 120),
-      lawFilter,
-      message: e instanceof Error ? e.message : String(e),
-    });
+  if (!platformFilter.eis && !platformFilter.sberAst) {
+    log("пропуск: не выбрана ни одна площадка");
+    return [];
   }
 
+  let eisTenders: Tender[] = [];
+  let strictEisCount = 0;
+  if (platformFilter.eis) {
+    try {
+      const rawEis = await searchEisTenders(trimmedQuery, 8, lawFilter);
+      const strictEis = filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawEis, trimmedQuery, true), lawFilter), platformFilter);
+      strictEisCount = strictEis.length;
+      eisTenders = strictEis.length > 0
+        ? strictEis
+        : filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawEis, trimmedQuery, false), lawFilter), platformFilter);
+      log("результат детерминированного поиска ЕИС", {
+        queryPreview: trimmedQuery.slice(0, 120),
+        lawFilter,
+        platformFilter,
+        rawEisCount: rawEis.length,
+        strictEisCount: strictEis.length,
+        eisCount: eisTenders.length,
+      });
+    } catch (e) {
+      log("ошибка детерминированного поиска ЕИС", {
+        queryPreview: trimmedQuery.slice(0, 120),
+        lawFilter,
+        platformFilter,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  let sberbankTenders: Tender[] = [];
+  if (platformFilter.sberAst && lawFilter.law44) {
+    try {
+      const rawSberbank = await searchSberbankAstTenders(trimmedQuery, 8);
+      const strictSberbank = filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawSberbank, trimmedQuery, true), lawFilter), platformFilter);
+      sberbankTenders = strictSberbank.length > 0
+        ? strictSberbank
+        : filterTendersByPlatform(filterTendersByLaw(sanitizeTenderList(rawSberbank, trimmedQuery, false), lawFilter), platformFilter);
+      log("результат детерминированного поиска Сбербанк-АСТ", {
+        queryPreview: trimmedQuery.slice(0, 120),
+        lawFilter,
+        platformFilter,
+        rawSberbankCount: rawSberbank.length,
+        sberbankCount: sberbankTenders.length,
+      });
+    } catch (e) {
+      log("ошибка детерминированного поиска Сбербанк-АСТ", {
+        queryPreview: trimmedQuery.slice(0, 120),
+        lawFilter,
+        platformFilter,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  const officialTenders = filterTendersByPlatform(
+    filterTendersByLaw(mergeTenderLists(eisTenders, sberbankTenders, trimmedQuery), lawFilter),
+    platformFilter
+  );
+
+  const shouldUseDeterministicOnly = platformFilter.sberAst;
   const conceptCount = queryConcepts(trimmedQuery).length;
   const singleLawSelected = Number(lawFilter.law44) + Number(lawFilter.law223) === 1;
   const shouldReturnEisOnly =
@@ -438,44 +513,67 @@ export async function runTenderSearch(
       : conceptCount >= 2
         ? strictEisCount > 0
         : eisTenders.length >= 3;
+
+  if (shouldUseDeterministicOnly) {
+    log("возврат результатов только по выбранным площадкам", {
+      lawFilter,
+      platformFilter,
+      eisCount: eisTenders.length,
+      sberbankCount: sberbankTenders.length,
+      officialCount: officialTenders.length,
+    });
+    return officialTenders;
+  }
+
   if (shouldReturnEisOnly) {
     log("возврат результатов без Gemini — хватило официальных источников", {
       eisCount: eisTenders.length,
+      officialCount: officialTenders.length,
       lawFilter,
+      platformFilter,
       singleLawSelected,
       codeLikeQuery: isCodeLikeQuery(trimmedQuery),
     });
-    return eisTenders;
+    return officialTenders;
   }
 
   if (!apiKey) {
-    if (eisTenders.length > 0) {
-      log("Gemini не настроен, возвращаем только результаты ЕИС", { eisCount: eisTenders.length });
-      return eisTenders;
+    if (officialTenders.length > 0) {
+      log("Gemini не настроен, возвращаем только детерминированные результаты", { officialCount: officialTenders.length, platformFilter });
+      return officialTenders;
     }
 
-    log("ошибка: GEMINI_API_KEY не задан и ЕИС не дал результатов");
+    log("ошибка: GEMINI_API_KEY не задан и детерминированные источники не дали результатов", { platformFilter });
     throw new Error("GEMINI_API_KEY не настроен на сервере разработки");
   }
 
   try {
-    const geminiTenders = await runGeminiTenderSearch(trimmedQuery, apiKey, lawFilter, proxyUrl);
-    const merged = filterTendersByLaw(mergeTenderLists(eisTenders, geminiTenders, trimmedQuery), lawFilter);
+    const geminiTenders = filterTendersByPlatform(
+      filterTendersByLaw(await runGeminiTenderSearch(trimmedQuery, apiKey, lawFilter, platformFilter, proxyUrl), lawFilter),
+      platformFilter
+    );
+    const merged = filterTendersByPlatform(
+      filterTendersByLaw(mergeTenderLists(officialTenders, geminiTenders, trimmedQuery), lawFilter),
+      platformFilter
+    );
     log("гибридный результат поиска", {
       lawFilter,
+      platformFilter,
       eisCount: eisTenders.length,
+      sberbankCount: sberbankTenders.length,
       geminiCount: geminiTenders.length,
       mergedCount: merged.length,
     });
     return merged;
   } catch (e) {
-    if (eisTenders.length > 0) {
-      log("Gemini недоступен, возвращаем деградированный результат из ЕИС", {
+    if (officialTenders.length > 0) {
+      log("Gemini недоступен, возвращаем деградированный результат из детерминированных источников", {
         lawFilter,
-        eisCount: eisTenders.length,
+        platformFilter,
+        officialCount: officialTenders.length,
         message: e instanceof Error ? e.message : String(e),
       });
-      return eisTenders;
+      return officialTenders;
     }
 
     throw e;

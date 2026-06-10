@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { ExternalLink, Loader2, Search as SearchIcon, TrendingUp, AlertCircle, DollarSign, ShieldAlert, Hash } from "lucide-react";
-import { Tender, TenderLawFilter } from "../types";
+import { Tender, TenderLawFilter, TenderPlatformFilter } from "../types";
 import { motion, AnimatePresence } from "motion/react";
 
 interface TenderSearchProps {
@@ -9,9 +9,18 @@ interface TenderSearchProps {
   searchKick?: number;
   lawFilter: TenderLawFilter;
   onLawFilterChange: React.Dispatch<React.SetStateAction<TenderLawFilter>>;
+  platformFilter: TenderPlatformFilter;
+  onPlatformFilterChange: React.Dispatch<React.SetStateAction<TenderPlatformFilter>>;
 }
 
-export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChange }: TenderSearchProps) {
+export function TenderSearch({
+  query,
+  searchKick = 0,
+  lawFilter,
+  onLawFilterChange,
+  platformFilter,
+  onPlatformFilterChange,
+}: TenderSearchProps) {
   const [tenders, setTenders] = useState<Tender[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,10 +29,12 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
 
   const trimmedQuery = query.trim();
   const hasActiveQuery = trimmedQuery.length >= 3;
-  const filtersSelected = lawFilter.law44 || lawFilter.law223;
+  const lawSelected = lawFilter.law44 || lawFilter.law223;
+  const platformSelected = platformFilter.eis || platformFilter.sberAst;
+  const filtersSelected = lawSelected && platformSelected;
   const queryIsFresh = submittedQuery === trimmedQuery && submittedQuery.length >= 3;
 
-  const fetchTenders = useCallback(async (q: string, filter: TenderLawFilter) => {
+  const fetchTenders = useCallback(async (q: string, law: TenderLawFilter, platform: TenderPlatformFilter) => {
     const trimmed = q.trim();
     if (trimmed.length < 3) {
       setTenders([]);
@@ -32,10 +43,18 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
       return;
     }
 
-    if (!filter.law44 && !filter.law223) {
+    if (!law.law44 && !law.law223) {
       setIsLoading(false);
       setTenders([]);
       setError("Выберите хотя бы один закон: 44-ФЗ и/или 223-ФЗ.");
+      setSubmittedQuery(trimmed);
+      return;
+    }
+
+    if (!platform.eis && !platform.sberAst) {
+      setIsLoading(false);
+      setTenders([]);
+      setError("Выберите хотя бы одну площадку: ЕИС и/или Сбербанк-АСТ.");
       setSubmittedQuery(trimmed);
       return;
     }
@@ -48,7 +67,7 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
       const res = await fetch("/api/tender-search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: trimmed, lawFilter: filter }),
+        body: JSON.stringify({ query: trimmed, lawFilter: law, platformFilter: platform }),
       });
       const payload = (await res.json()) as { tenders?: Tender[]; error?: string };
 
@@ -79,13 +98,13 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
   useEffect(() => {
     if (searchKick === lastKickHandledRef.current) return;
     lastKickHandledRef.current = searchKick;
-    void fetchTenders(trimmedQuery, lawFilter);
-  }, [searchKick, trimmedQuery, lawFilter, fetchTenders]);
+    void fetchTenders(trimmedQuery, lawFilter, platformFilter);
+  }, [searchKick, trimmedQuery, lawFilter, platformFilter, fetchTenders]);
 
   useEffect(() => {
     if (!queryIsFresh || !filtersSelected) return;
-    void fetchTenders(trimmedQuery, lawFilter);
-  }, [lawFilter, queryIsFresh, filtersSelected, trimmedQuery, fetchTenders]);
+    void fetchTenders(trimmedQuery, lawFilter, platformFilter);
+  }, [lawFilter, platformFilter, queryIsFresh, filtersSelected, trimmedQuery, fetchTenders]);
 
   useEffect(() => {
     if (!trimmedQuery) {
@@ -106,10 +125,10 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <TrendingUp className="h-5 w-5 text-blue-600" />
-          <h3 className="text-lg font-bold text-slate-900">Актуальные закупки в ЕИС</h3>
+          <h3 className="text-lg font-bold text-slate-900">Актуальные закупки</h3>
         </div>
         <button
-          onClick={() => void fetchTenders(trimmedQuery, lawFilter)}
+          onClick={() => void fetchTenders(trimmedQuery, lawFilter, platformFilter)}
           disabled={isLoading || trimmedQuery.length < 3 || !filtersSelected}
           className="text-xs font-bold text-blue-600 hover:text-blue-700 uppercase tracking-wider flex items-center gap-1 disabled:opacity-50"
         >
@@ -118,26 +137,50 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
         </button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-        <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Искать по:</span>
-        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={lawFilter.law44}
-            onChange={(event) => onLawFilterChange((prev) => ({ ...prev, law44: event.target.checked }))}
-            className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-          />
-          44-ФЗ
-        </label>
-        <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={lawFilter.law223}
-            onChange={(event) => onLawFilterChange((prev) => ({ ...prev, law223: event.target.checked }))}
-            className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-          />
-          223-ФЗ
-        </label>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Законы:</span>
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={lawFilter.law44}
+              onChange={(event) => onLawFilterChange((prev) => ({ ...prev, law44: event.target.checked }))}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            44-ФЗ
+          </label>
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={lawFilter.law223}
+              onChange={(event) => onLawFilterChange((prev) => ({ ...prev, law223: event.target.checked }))}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            223-ФЗ
+          </label>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Площадки:</span>
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={platformFilter.eis}
+              onChange={(event) => onPlatformFilterChange((prev) => ({ ...prev, eis: event.target.checked }))}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            ЕИС
+          </label>
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={platformFilter.sberAst}
+              onChange={(event) => onPlatformFilterChange((prev) => ({ ...prev, sberAst: event.target.checked }))}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            Сбербанк-АСТ
+          </label>
+        </div>
       </div>
 
       <AnimatePresence mode="wait">
@@ -151,7 +194,7 @@ export function TenderSearch({ query, searchKick = 0, lawFilter, onLawFilterChan
           >
             <Loader2 className="h-8 w-8 text-blue-600 animate-spin" />
             <p className="text-sm text-slate-500 font-medium text-center max-w-md">
-              Сначала проверяем официальный ЕИС, затем при необходимости дополняем результаты AI-поиском. Обычно это занимает 5–30 секунд.
+              Проверяем выбранные площадки и собираем актуальные закупки. Обычно это занимает 5–30 секунд.
             </p>
           </motion.div>
         ) : error ? (

@@ -29,9 +29,13 @@ function tenderSearchDevPlugin(env: Record<string, string>): Plugin {
         }
         try {
           const raw = await readJsonBody(req);
-          const body = JSON.parse(raw) as { query?: string; lawFilter?: { law44?: boolean; law223?: boolean } };
+          const body = JSON.parse(raw) as {
+            query?: string;
+            lawFilter?: { law44?: boolean; law223?: boolean };
+            platformFilter?: { eis?: boolean; sberAst?: boolean };
+          };
           const query = body.query ?? '';
-          const tenders = await runTenderSearch(query, apiKey ?? '', body.lawFilter, proxyUrl);
+          const tenders = await runTenderSearch(query, apiKey ?? '', body.lawFilter, body.platformFilter, proxyUrl);
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
           res.end(JSON.stringify({ tenders }));
         } catch (e) {
